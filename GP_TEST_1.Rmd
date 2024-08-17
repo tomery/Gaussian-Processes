@@ -1,0 +1,755 @@
+---
+title: 'Gaussian Processes  '
+author: "Tomer Yaniv"
+date: "May 19, 2020"
+output:
+  ioslides_presentation:
+    widescreen: yes
+  slidy_presentation: default
+subtitle: '  DS monthly - Riskified '
+---
+
+```{r include=TRUE,message=FALSE,warning=FALSE,echo=FALSE}
+# library(riskir)
+library(tidyverse)
+library(kableExtra)
+# library(riskiconn)
+library(plotly)
+library(Hmisc)
+library(GPfit)
+library(bivariate)
+library(emdbook)
+library(latex2exp)
+library(ggExtra)
+library(knitr)
+library(MASS)
+library(reshape2)
+```
+
+```{r , echo=FALSE}
+library(reticulate)
+use_python("/usr/bin/python3") # Change accordingly to your Python version
+matplotlib <- import("matplotlib")
+scipy<-import("scipy")
+matplotlib$use("Agg", force = TRUE)
+```
+
+## Scope of talk
+<div class="red2">
+
+- **Motivating example :)**
+
+- **Some facts about Guassian Distributions**
+
+- **Gaussian Processes - core**
+
+- **Application 1 - Regression**
+
+- **Application 2 - Hyper parameter optimization**
+
+## Example - nonlinear regression without 'certainty' estimation
+<div class="black">
+- Nonlinear regression based on black points - estimation for the red one:
+```{r,   echo=FALSE}
+
+f <- function(x) {
+  f <- (2 * x - 10)^2 * sin(32 * x - 4)
+  return(f)
+}
+x <- c(0,1/3,  1/2, 2/3, 1)
+eval <- data.frame(x = x, y = f(x)) 
+eval <-eval %>% mutate(col_id=1:nrow(eval)) %>% mutate(label_col=ifelse(col_id!=2,0,1)) %>%  as.matrix()
+
+fit <- GP_fit(X = eval[-2 , "x"], 
+              Y = eval[-2 , "y"], 
+              corr = list(type = "exponential", power = 1.95))
+eval<-as.data.frame(eval)
+
+x_new <- seq(0, 1, length.out = 100)
+pred <- predict.GP(fit, xnew = data.frame(x = x_new))
+mu <- pred$Y_hat
+sigma <- sqrt(pred$MSE)
+
+highlight<-data.frame(x=1/3,y=f(1/3))
+
+ggplot(as.data.frame(eval))+
+  geom_line(data = data.frame(x = x_new, y = mu),
+            aes(x = x, y = y), color = "blue", linetype = "dashed")+
+  # geom_ribbon(data = data.frame(x = x_new, y_up = mu + sigma, y_low = mu - sigma), 
+  #             aes(x = x_new, ymax = y_up, ymin = y_low), fill = "skyblue", alpha = 0.5) +
+  geom_point(aes(x,y), size = 3)+
+  # geom_point(data=eval[2,],aes(x,y,color='red',size=2))+
+    theme_minimal()+geom_vline(aes(xintercept=1/3),color='black',linetype="dashed")+ylim(-80,100)+
+  theme(legend.position = "none")
+```
+
+
+## Example - nonlinear regression WITH 'certainty' estimation
+<div class="black">
+- Nonlinear regression based on black points - estimation for the red one:
+```{r,   echo=FALSE}
+ggplot(as.data.frame(eval))+
+  geom_line(data = data.frame(x = x_new, y = mu),
+            aes(x = x, y = y), color = "blue", linetype = "dashed")+
+   geom_ribbon(data = data.frame(x = x_new, y_up = mu + sigma, y_low = mu - sigma), 
+               aes(x = x_new, ymax = y_up, ymin = y_low), fill = "skyblue", alpha = 0.5) +
+  geom_point(aes(x,y), size = 3)+
+  geom_point(data=eval[2,],aes(x,y,color='red',size=2))+
+  theme_minimal() +
+  theme(legend.position = "none")+ylim(-80,100)
+```
+
+
+# Gaussians
+
+## 1 dimensional Gaussisn
+<div class="black">
+We have: $\ X \sim \mathcal{N}(\mu,\,\sigma^{2})$ - two parameters mean and sd, with 
+density given by: 
+$f(x) = \frac{1}{{\sigma \sqrt {2\pi } }}e^{{{ - \left( {x - \mu } \right)^2 } \mathord{\left/ {\vphantom {{ - \left( {x - \mu } \right)^2 } {2\sigma ^2 }}} \right. } {2\sigma ^2 }}}$ 
+
+```{r,   echo=FALSE,warning=FALSE}
+ggplot(data.frame(x = c(-6, 6)), aes(x)) + 
+  stat_function(fun = dnorm, args = list(mean = 0, sd = 0.5), aes(color = "m = 0, s = 0.5"),size=1.2) +
+  stat_function(fun = dnorm, args = list(mean = 0, sd = 1), aes(color = "m = 0, s = 1"),size=1.2) +
+  stat_function(fun = dnorm, args = list(mean = 0, sd = 2), aes(color = "m = 0, s = 2"),size=1.2) +
+  stat_function(fun = dnorm, args = list(mean = 0, sd = 3), aes(color = "m = 0, s = 3"),size=1.2) +
+  scale_colour_manual("Legend", values = c("#B266FF", "#6666FF", "#66B2FF", "#00FF80"))+
+  theme(legend.position = c(0.8,0.8))
+``` 
+
+
+
+## Multi dimensional Gaussisn 
+<div class="black">
+We write: $\ X \sim \mathcal{N}(\mu,\,\Sigma)$ ,$\begin{equation*}
+\Sigma = 
+\begin{pmatrix}
+\sigma_{1,1}  & \cdots & \sigma_{1,n} \\
+\ddots  \\
+\sigma_{n,1}  &  \cdots & \sigma_{n,n} 
+\end{pmatrix}
+\end{equation*}$ 
+, $\begin{equation*}
+\mu = 
+\begin{pmatrix}
+\mu_{1} \\
+\ddots  \\
+\mu_{n} 
+\end{pmatrix}
+\end{equation*}$
+for a multivariate Gaussian dist' with Cov matrix and Mean vector. \
+
+```{r,   echo=FALSE,fig.align="center",fig.height=2,fig.width=4}
+F=nbvpdf(0,0,1,1,0)
+plot(F,TRUE)
+```
+
+
+we can write: $X=\begin{pmatrix}
+x_A\\ x_B
+\end{pmatrix}$, $\mu=\begin{pmatrix} \mu_A\\\mu_B\end{pmatrix}$ and $\Sigma=\begin{pmatrix} 
+\Sigma_{AA} & \Sigma_{AB} \\ 
+\Sigma_{BA} & \Sigma_{BB} \end{pmatrix}$ 
+
+
+
+
+
+## 2 dim Gaussian examples:
+<div class="black">
+Having: $\ X \sim \mathcal{N}(\mu,\,\Sigma)$ with $\mu=\left[\begin{array}
+{rrr}
+0 \\
+0 \\
+\end{array}\right]$
+, $\mathbf{\Sigma} = \left(\begin{array}
+{rrr}
+\sigma_1 &\rho \\
+\rho & \sigma_2 
+\end{array}\right)$, some examples of effect of sigma and rho on shape:
+
+
+```{r,   echo=FALSE,fig.height=5,fig.width=10,fig.align="center",warning=FALSE}
+m <- c(0, 0)
+sigma <- matrix(c(1,0,0,1), nrow=2)
+ parameters=paste0('sigma1 = ',sigma[1,1],', sigma2 = ',sigma[2,2],', rho = ',sigma[1,2])
+data.grid <- expand.grid(s.1 = seq(-3, 3, length.out=30), s.2 = seq(-3, 3, length.out=30))
+q.samp_1 <- cbind(data.grid, prob = mvtnorm::dmvnorm(data.grid, mean = m, sigma = sigma),parameters=parameters)
+
+sigma <- matrix(c(1,0.5,0.5,1), nrow=2)
+parameters=paste0('sigma1 = ',sigma[1,1],', sigma2 = ',sigma[2,2],', rho = ',sigma[1,2])
+data.grid <- expand.grid(s.1 = seq(-3, 3, length.out=30), s.2 = seq(-3, 3, length.out=30))
+q.samp_2 <- cbind(data.grid, prob = mvtnorm::dmvnorm(data.grid, mean = m, sigma = sigma),parameters=parameters)
+
+sigma <- matrix(c(1,0.75,0.75,1), nrow=2)
+parameters=paste0('sigma1 = ',sigma[1,1],', sigma2 = ',sigma[2,2],', rho = ',sigma[1,2])
+data.grid <- expand.grid(s.1 = seq(-3, 3, length.out=30), s.2 = seq(-3, 3, length.out=30))
+q.samp_3 <- cbind(data.grid, prob = mvtnorm::dmvnorm(data.grid, mean = m, sigma = sigma),parameters=parameters)
+
+sigma <- matrix(c(1,-0.75,-0.75,2), nrow=2)
+parameters=paste0('sigma1 = ',sigma[1,1],', sigma2 = ',sigma[2,2],', rho = ',sigma[1,2])
+data.grid <- expand.grid(s.1 = seq(-3, 3, length.out=30), s.2 = seq(-3, 3, length.out=30))
+q.samp_4 <- cbind(data.grid, prob = mvtnorm::dmvnorm(data.grid, mean = m, sigma = sigma),parameters=parameters)
+
+q.samp<-bind_rows(q.samp_1,q.samp_2,q.samp_3,q.samp_4)
+
+
+
+ggplot(q.samp, aes(x=s.1, y=s.2, z=prob ))+ 
+  geom_contour(aes(colour=after_stat(level)),size=1) +
+  coord_fixed(xlim = c(-3.5, 3.5), ylim = c(-4, 4), ratio = 1)+theme(legend.position = "none")+facet_grid(cols=vars(parameters))+
+  theme(strip.text.x = element_text(size = 10,color='red'))
+
+```
+
+## Marginalization property: 
+<div class="black">
+We have:   \vspace{32pt} $\;p(x) = \int p(x, y)dy\;$   for the Marginal probability density. \
+What about the multivariate Gaussian ? \
+(can two marginal Gaussians 'come' from non jointly Gaussian ??)...
+
+```{r,   echo=FALSE,fig.height=4,fig.width=4,fig.align="center"}
+
+x<-MASS::mvrnorm(n=10000,rep(0,2),matrix(c(10,3,3,2),2,2))
+df<-data.frame(x=x[,1],y=x[,2])
+p <- ggplot(df, aes(x, y)) + geom_point() +
+  theme_bw(15) 
+ggExtra::ggMarginal(p, type = "density",  size = 4, color='red')
+```
+
+## And with formulas - Marginals:
+<div class="black">
+
+When we have multivariate Gaussian partitioned into: $x=\begin{pmatrix} x_A\\ x_B \end{pmatrix}$, 
+\
+\
+with mean:  $\mu=\begin{pmatrix} \mu_A\\\mu_B\end{pmatrix}$ and cov matrix: $\Sigma=\begin{pmatrix} 
+\Sigma_{AA} & \Sigma_{AB} \\ 
+\Sigma_{BA} & \Sigma_{BB} \end{pmatrix}$, we have 
+\
+\
+marginal densities $p(x_A)=\int_{x_B}p(x_A,x_B;\mu,\Sigma)dx_B$  and 
+\
+\
+$p(x_B)=\int_{x_A}p(x_A,x_B;\mu,\Sigma)dx_A$ Gaussians with: 
+\
+\
+$\boxed{\color{blue}{x_A \sim \mathcal{N}(\mu_A,\,\Sigma_{AA}) , x_B \sim \mathcal{N}(\mu_B,\,\Sigma_{BB})}}$
+
+## Marginalization property - Cont':
+<div class="black">
+Can two marginal Gaussians 'come' from non jointly Gaussian?  - Yes ! 
+
+```{r,   echo=FALSE,fig.height=4,fig.width=4,fig.align="center"}
+x<-MASS::mvrnorm(n=20000,rep(0,2),matrix(c(2,0,0,2),2,2))
+df<-data.frame(x=x[,1],y=x[,2])
+df_1<-df[(df$x>0 & df$y>0) | (df$x<=0 & df$y<=0),]
+p <- ggplot(df_1, aes(x, y)) + geom_point() +
+  theme_bw(15) 
+ggExtra::ggMarginal(p, type = "density",  size = 4, color='red')
+```
+
+## Conditioning property:
+<div class="black">
+Assuming we observe \vspace{32p} $X_1=x_1$.How does that changes our beliefs 
+about \vspace{32p} $X_1$? 
+\
+We have our conditional density function as: $\;f_{X_2 \mid X_1}(x_2 \mid x_1)= \frac{f(x_1,x_2)}{f_{X_1}(x_1)}$ \
+
+What's the case for two Gaussians when we condition on one ? ...
+
+```{r,   echo=FALSE,fig.height=3.5,fig.width=4,fig.align="center",warning=FALSE, message=FALSE}
+m <- c(0, 0)
+sigma <- matrix(c(1,0.8,0.8,1), nrow=2)
+parameters=paste0('sigma1 = ',sigma[1,1],', sigma2 = ',sigma[2,2],', rho = ',sigma[1,2])
+data.grid <- expand.grid(s.1 = seq(-3, 3, length.out=30), s.2 = seq(-3, 3, length.out=30))
+q.samp_1 <- cbind(data.grid, prob = mvtnorm::dmvnorm(data.grid, mean = m, sigma = sigma),parameters=parameters)
+y<-dnorm(seq(-3, 3, length.out=30),mean=0.8*1.5,sd=sqrt(1-0.8^2))
+dd<-data.frame(s.1=seq(-3, 3, length.out=30),y=y)
+q.samp_2<-q.samp_1 %>% inner_join(dd)
+
+ggplot(q.samp_2, aes(x=s.1, y=s.2, z=prob ))+ 
+  geom_contour(aes(colour=after_stat(level)),size=1) +
+  coord_fixed(xlim = c(-3.5, 3.5), ylim = c(-4, 4), ratio = 1)+theme(legend.position = "none")+# facet_grid(cols=vars(parameters))+
+  geom_line(aes(y=y),color='red',size=2)+coord_flip()+geom_hline(yintercept = 1.5,col=2,color='blue')
+  theme(strip.text.x = element_text(size = 10,color='red'))
+```
+
+
+
+## And with formulas - Conditional:
+<div class="black">
+Again for our multivariate Gaussian : $x=\begin{pmatrix} x_A\\ x_B \end{pmatrix}$, 
+\
+\
+with mean:  $\mu=\begin{pmatrix} \mu_A\\\mu_B\end{pmatrix}$ and cov matrix: $\Sigma=\begin{pmatrix} 
+\Sigma_{AA} & \Sigma_{AB} \\ 
+\Sigma_{BA} & \Sigma_{BB} \end{pmatrix}$,
+\
+\
+We have conditional density: $\ p(x_A\mid x_B)=\frac{p(x_A,x_B;\mu,\Sigma)}{\int_{x_A}p(x_A,x_B;\mu,\Sigma)dx_A}$ 
+\
+a Gaussian with: 
+\
+\
+ $\boxed{\color{blue}{x_A\mid x_B \sim \mathcal{N}(\mu_A+\Sigma_{AB}\Sigma_{BB}^{-1}(x_B-\mu_B) , \Sigma_{AA}-\Sigma_{AB}\Sigma_{BB}^{-1}\Sigma_{BA})}}$ 
+\
+\
+and similar for $x_B\mid x_A$ and $p(x_B\mid x_A)$  
+
+# From Gaussians to Gaussian Processes
+
+## Gaussian Process - Definition
+<div class="black">
+A **Gaussian Process** is a collection of indexed random variables 
+\
+\
+(RV's) (i.e by time where index set is $\mathbb{R}$ ) such that 
+\
+\
+every finite collection of those RV's has a multivariate normal distribution
+\
+\
+$\color{blue}{f(x) \sim \mathcal{GP}(m(x),k(x,x'))}$ , meaning for any finite subset $X =\{\mathbf{x}_1 \ldots \mathbf{x}_n \}$ 
+\
+\
+of the domain x we have: $f(X) \sim \mathcal{N}(m(X), k(X, X))$ with 
+\
+\
+mean vector: $\mathbf{\mu} = m(X)$  and cov matrix  $\Sigma = k(X, X)$ - 
+\
+\
+ called - the Kernel
+
+## Gaussian Process - example:
+<div class="black">
+Let's take the following Gussian kernel : $\operatorname{k}(x_i, x_j) = \exp\left(-\frac{(x_i - x_j)^2}{2 \ell ^ 2}\right)$
+with different $\ell$ values - the index set to be 50 equidistant points in -5 to 5 ('time series').
+\
+
+<div style="float: left; width: 40%;">
+<font size="4">
+* The closer the points, $x_1,x_2$
+\
+the more correlated the samples 
+\
+for fixed $\ell$
+\
+\
+* The higher the $\ell$
+\
+the larger kernel values
+\
+for fixed two points
+</font>
+</div>
+<!-- <div style="float: right; width: 60%;"> -->
+<!-- + This text is on the right -->
+<!-- </div> -->
+```{r,   echo=FALSE,fig.height=4,fig.width=6,fig.align="right",warning=FALSE, message=FALSE}
+x_predict <- seq(-5,5,len=50)
+l_s <- c(0.1,1,3)
+dat_total<-data.frame(x=c(),variable=c(),value=c(),l=c())
+for (l in l_s)
+{
+SE <- function(Xi,Xj, l) exp(-0.5 * (Xi - Xj)^2 / l ^ 2)
+cov <- function(X, Y) outer(X, Y, SE, l)
+COV <- cov(x_predict, x_predict)
+values <- mvrnorm(3, rep(0, length=length(x_predict)), COV)
+dat <- data.frame(x=x_predict, t(values))
+dat <- melt(dat, id="x")
+dat$l=l
+dat_total<-rbind(dat_total,dat)
+}
+fig2a <- ggplot(dat_total,aes(x=x,y=value)) +
+  #geom_rect(xmin=-Inf, xmax=Inf, ymin=-2, ymax=2, fill="grey80") +
+  geom_line(aes(color=variable),size=1) +   theme_bw() +
+  geom_point(size=0.8)+
+  scale_y_continuous(lim=c(-3,3), name="output, f(x)") +
+  xlab("input, x")+ggtitle(" 3 samples for each x value - different L values")+facet_grid(l~.)+
+  theme(plot.title=element_text(hjust=0.5),strip.text.y=element_text(size=11),legend.position = "none")
+
+# fig2a <- ggplot(dat_total,aes(x=x,y=value)) +
+#   #geom_rect(xmin=-Inf, xmax=Inf, ymin=-2, ymax=2, fill="grey80") +
+#   geom_line(aes(color=variable),size=1) +   theme_bw() +
+#   geom_point(size=0.8)+
+#   scale_y_continuous(lim=c(-3,3), name="output, f(x)") +
+#   xlab("input, x")+ggtitle(" 3 samples for each x value")+
+#   theme(plot.title=element_text(hjust=0.5),legend.position = "none")+facet_grid(l~.)
+fig2a
+```
+
+## Different Kernels: 
+<div class="black">
+**Alot of Kernels exist out there:**
+\
+Exponential quadratic:  $\ k(x_a, x_b) = \sigma^2 \exp \left(-\frac{ \left\Vert x_a - x_b \right\Vert^2}{2\ell^2}\right)$
+\
+Rational quadratic:  $\ k(x_a, x_b) = \sigma^2 \left( 1 + \frac{ \left\Vert x_a - x_b \right\Vert^2}{2 \alpha \ell^2} \right)^{-\alpha}$
+\
+Periodic:  $\ k(x_a, x_b) = \sigma^2 \exp \left(-\frac{2}{\ell^2}\sin^2 \left( \pi \frac{\lvert x_a - x_b \rvert}{p}\right) \right)$
+\
+\
+*A lot others also as Kernels can be combined by adding them together 
+
+## Kernel example - Periodic:
+<div class="black">
+$\ k(x_a, x_b) = \sigma^2 \exp \left(-\frac{2}{\ell^2}\sin^2 \left( \pi \frac{\lvert x_a - x_b \rvert}{p}\right) \right),\ell=1,\sigma=1$
+\
+```{r,   echo=FALSE,fig.height=3.5,fig.width=8,fig.align="center",warning=FALSE, message=FALSE}
+# generate covariance matrix for points in `x` using given kernel function
+cov_matrix <- function(x, kernel_fn, ...) {
+    outer(x, x, function(a, b) kernel_fn(a, b, ...))
+}
+ 
+# given x coordinates, take N draws from kernel function at those points
+draw_samples <- function(x, N, seed = 1, kernel_fn, ...) {
+    Y <- matrix(NA, nrow = length(x), ncol = N)
+    set.seed(seed)
+    for (n in 1:N) {
+        K <- cov_matrix(x, kernel_fn, ...)
+        Y[, n] <- mvrnorm(1, mu = rep(0, times = length(x)), Sigma = K)
+    }
+    Y
+}
+x <- seq(0, 2, length.out = 201)  # x-coordinates
+N <- 3  # no. of draws
+col_list <- c("red", "blue", "black")  # for line colors
+
+period_kernel <- function(x, y, p = 1, sigma = 1, length = 1) {
+    sigma^2 * exp(-2 * sin(pi * abs(x - y) / p)^2 / length^2)
+}
+ 
+par(mfrow = c(1, 3))
+for (p in c(0.5, 1, 2)) {
+    Y <- draw_samples(x, N, kernel_fn = period_kernel, p = p)
+     
+    plot(range(x), range(Y), xlab = "x", ylab = "y", type = "n",
+         main = paste("Periodic kernel, p =", p))
+    for (n in 1:N) {
+        lines(x, Y[, n], col = col_list[n], lwd = 1.5)
+    }
+}
+
+
+```
+
+
+# Gaussian Process Regression
+
+## Gaussian Process - making prediction:
+<div class="black">
+In order to make prediction using GP we use the equation from before:
+$\boxed{\color{blue}{x_A\mid x_B \sim \mathcal{N}(\mu_A+\Sigma_{AB}\Sigma_{BB}^{-1}(x_B-\mu_B) , \Sigma_{AA}-\Sigma_{AB}\Sigma_{BB}^{-1}\Sigma_{BA})}}$ 
+
+so if we decompose $\Sigma$ as $\begin{pmatrix} K, K_* \\K_*^\top , K_{**} \end{pmatrix}$ with $K$ the training kernel matrix,
+\
+$K_*$ the training-testing kernel matrix, and $K_{**}$ testing kernel matrix,
+\
+\
+the conditional distribution of (noise free) values of test function $f_*$ ,given  
+\
+\
+$\ Y,X$ the training and $\ X_*$ our test points are (taking mean = 0) dist':
+\
+\
+$f_*|(Y,X,X_* )\sim \mathcal{N}(K_*^\top K^{-1}y,K_{**}-K_*^\top K^{-1}K_*)$ \
+\
+*additional version for noisy data as well
+
+
+## Example for prediction - noise free training data:
+<div class="black">
+Looking at  $k(\mathbf{x}_i,\mathbf{x}_j) = \sigma_f^2 \exp(-\frac{1}{2l^2}
+  (\mathbf{x}_i - \mathbf{x}_j)^T
+  (\mathbf{x}_i - \mathbf{x}_j))$ - the Gaussian/exponential kernel, and training data: 
+  $(-4,-1) ,\ (-3,0.5),\ (-2,1),\ (0,1.5),\ (1,-1)$ , we use the posterior dist':
+```{python,echo=FALSE,message=FALSE,warning=FALSE,error=FALSE,results='hide'}
+import numpy as np
+from matplotlib import pyplot as plt
+
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
+
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
+def kernel(X1, X2, l=1.0, sigma_f=1.0):
+    '''
+    Isotropic squared exponential kernel. Computes 
+    a covariance matrix from points in X1 and X2.
+    
+    Args:
+        X1: Array of m points (m x d).
+        X2: Array of n points (n x d).
+
+    Returns:
+        Covariance matrix (m x n).
+    '''
+    sqdist = np.sum(X1**2, 1).reshape(-1, 1) + np.sum(X2**2, 1) - 2 * np.dot(X1, X2.T)
+    return sigma_f**2 * np.exp(-0.5 / l**2 * sqdist)
+
+def plot_gp(mu, cov, X, X_train=None, Y_train=None, samples=[]):
+    X = X.ravel()
+    mu = mu.ravel()
+    uncertainty = 1.96 * np.sqrt(np.diag(cov))
+    
+    plt.fill_between(X, mu + uncertainty, mu - uncertainty, alpha=0.1)
+    plt.plot(X, mu, label='Mean')
+    for i, sample in enumerate(samples):
+        plt.plot(X, sample, lw=1, ls='--', label=f'Sample {i+1}')
+    if X_train is not None:
+        plt.plot(X_train, Y_train, 'rx')
+    plt.legend()
+    plt.show()
+```
+```{python,echo=FALSE,message=FALSE,warning=FALSE,error=FALSE,results='hide'}
+
+from numpy.linalg import inv
+
+def posterior_predictive(X_s, X_train, Y_train, l=1.0, sigma_f=1.0, sigma_y=1e-8):
+    '''  
+    Computes the suffifient statistics of the GP posterior predictive distribution 
+    from m training data X_train and Y_train and n new inputs X_s.
+    
+    Args:
+        X_s: New input locations (n x d).
+        X_train: Training locations (m x d).
+        Y_train: Training targets (m x 1).
+        l: Kernel length parameter.
+        sigma_f: Kernel vertical variation parameter.
+        sigma_y: Noise parameter.
+    
+    Returns:
+        Posterior mean vector (n x d) and covariance matrix (n x n).
+    '''
+    K = kernel(X_train, X_train, l, sigma_f) + sigma_y**2 * np.eye(len(X_train))
+    K_s = kernel(X_train, X_s, l, sigma_f)
+    K_ss = kernel(X_s, X_s, l, sigma_f) + 1e-8 * np.eye(len(X_s))
+    K_inv = inv(K)
+    
+    # Equation (4)
+    mu_s = K_s.T.dot(K_inv).dot(Y_train)
+
+    # Equation (5)
+    cov_s = K_ss - K_s.T.dot(K_inv).dot(K_s)
+    
+    return mu_s, cov_s
+```
+
+```{python,echo=FALSE,message=FALSE,warning=FALSE,error=FALSE,results='hide',fig.height=4,fig.width=6,fig.align="center"}
+# Noise free training data
+X = np.arange(-5, 5, 0.2).reshape(-1, 1)
+X_train = np.array([-4, -3, -2, 0, 1]).reshape(-1, 1)
+Y_train = np.array([-1,0.5,1,1.5,-1]).reshape(-1,1)
+
+# Compute mean and covariance of the posterior predictive distribution
+mu_s, cov_s = posterior_predictive(X, X_train, Y_train)
+
+samples = np.random.multivariate_normal(mu_s.ravel(), cov_s, 3)
+plot_gp(mu_s, cov_s, X, X_train=X_train, Y_train=Y_train, samples=samples)
+```
+
+
+## Example for prediction - noisy training data:
+<div class="black">
+In case some noise is included and we only get approximated training points
+so non-zero variance at those points:
+
+```{python,echo=FALSE,message=FALSE,warning=FALSE,error=FALSE,results='hide',fig.height=4,fig.width=6,fig.align="center"}
+noise = 0.4
+X = np.arange(-5, 5, 0.2).reshape(-1, 1)
+X_train = np.array([-4, -3, -2, 0, 1]).reshape(-1, 1)
+Y_train = np.array([-1,0.5,1,1.5,-1]).reshape(-1,1)
+
+# Compute mean and covariance of the posterior predictive distribution
+mu_s, cov_s = posterior_predictive(X, X_train, Y_train, sigma_y=noise)
+
+samples = np.random.multivariate_normal(mu_s.ravel(), cov_s, 3)
+plot_gp(mu_s, cov_s, X, X_train=X_train, Y_train=Y_train, samples=samples)
+```
+
+
+## The effect of kernel's parameters: 
+<div class="black">
+```{python plot,echo=FALSE,message=FALSE,warning=FALSE,error=FALSE,results='hide'}
+
+#plt.figure(figsize=(6,3))
+mu_s_1, cov_s_1 = posterior_predictive(X, X_train, Y_train, l=0.3, 
+                                       sigma_f=1, 
+                                       sigma_y=0.2)
+mu_s_2, cov_s_2 = posterior_predictive(X, X_train, Y_train, l=3, 
+                                       sigma_f=1, 
+                                       sigma_y=0.2)
+                                       
+mu_s_3, cov_s_3 = posterior_predictive(X, X_train, Y_train, l=1, 
+                                       sigma_f=1, 
+                                       sigma_y=0.1)
+
+fig = plt.figure(figsize = (5,3))
+plt.title(f'l = {0.3}, sigma_f = {1}, sigma_y = {0.2}')
+plot_gp(mu_s_1, cov_s_1, X, X_train=X_train, Y_train=Y_train)
+
+fig = plt.figure(figsize = (5,3))
+plt.title(f'l = {3}, sigma_f = {2}, sigma_y = {0.05}')
+plot_gp(mu_s_2, cov_s_2, X, X_train=X_train, Y_train=Y_train)
+
+#fig = plt.figure(figsize = (3.5,3))
+#plt.title(f'l = {1}, sigma_f = {1}, sigma_y = {0.1}')
+#plot_gp(mu_s_3, cov_s_3, X, X_train=X_train, Y_train=Y_train)
+```
+
+* It's possible to optimize kernel's parameters using \
+  marginal likelihood 
+
+
+# Gaussian Processes - Bayesian Optimization
+
+## Black box optimization
+<div class="black">
+Given a function we would like to optimize WITHOUT knowing it's gradient
+
+```{r,   echo=FALSE}
+
+f <- function(x) {
+  f <- (2 * x - 10)^2 * sin(32 * x - 4)
+  return(f)
+}
+x <- c(0,1/3,  1/2, 2/3, 1)
+eval <- data.frame(x = x, y = f(x)) 
+eval <-eval %>% mutate(col_id=1:nrow(eval)) %>% mutate(label_col=ifelse(col_id!=2,0,1)) %>%  as.matrix()
+
+fit <- GP_fit(X = eval[-2 , "x"], 
+              Y = eval[-2 , "y"], 
+              corr = list(type = "exponential", power = 1.95))
+eval<-as.data.frame(eval)
+
+x_new <- seq(0, 1, length.out = 100)
+pred <- predict.GP(fit, xnew = data.frame(x = x_new))
+mu <- pred$Y_hat
+sigma <- sqrt(pred$MSE)
+
+highlight<-data.frame(x=1/3,y=f(1/3))
+
+ggplot(as.data.frame(eval))+
+  geom_line(data = data.frame(x = x_new, y = mu),
+            aes(x = x, y = y), color = "blue", linetype = "dashed")+
+  # geom_ribbon(data = data.frame(x = x_new, y_up = mu + sigma, y_low = mu - sigma), 
+  #             aes(x = x_new, ymax = y_up, ymin = y_low), fill = "skyblue", alpha = 0.5) +
+  geom_point(aes(x,y), size = 3)+
+  # geom_point(data=eval[2,],aes(x,y,color='red',size=2))+
+    theme_minimal()+geom_vline(aes(xintercept=1/3),color='black',linetype="dashed")+ylim(-80,100)+
+  theme(legend.position = "none")
+```
+
+## GP Bayesian optimization:
+<div class="black">
+* Black box optimization when no gradient exists
+\
+* It's possible that grid search is expensive (i.e looking for oil)
+\
+* ML algorithms need that ! classical, Deep Learning...
+
+**Algorithm:**\
+\
+** We take surrogate function - GP - easy to compute and gives CIs !\
+\
+** We train GP \
+\
+** We use acquisition function to suggest on new points to explore\
+\
+** Evaluate our function at acq' function extremum - new point added\
+\
+** Continue till stopping criteria
+
+
+
+## Acquisition functions:
+<div class="black">
+Having $f$ our black-box function, $\hat f(x)$ the GP sample 
+\
+**MPI - max prob of improvement:** \
+$\color{blue}{P(\hat f(x)\geq f(x^+)+\xi)=  \Phi(\frac{\mu(x) - f(x^+) - \xi}{\sigma(x)})}$ \
+\
+**Expected improvement:** \
+$\color{green}{EI(x) = \mathbb{E}max(f(x)-f(x^+),0)}$ \
+\
+**GP-lower confidence interval:** \
+$\color{red}{UCB(x)=\mu(x)+\kappa\sigma(x)}$  
+\
+\
+with:$\ f(x^+)$ - the current max value, $\mu(x), \sigma(x)$ -  the mean/sd of dist' \
+defined by GP $\Phi,\phi$ the standard normal cumulative/density functions
+and $\xi, \kappa$ - exploration/exploitation parameters
+
+
+
+
+## Bayesian Opt - round 1:
+```{r ,echo=FALSE ,fig.height=12,fig.width=10,fig.align="center"}
+img1_path<-"BO_2_1.PNG"
+include_graphics(img1_path)
+```
+
+## Bayesian Opt - round 2:
+```{r ,echo=FALSE ,fig.height=12,fig.width=10,fig.align="center"}
+img1_path<-"BO_2_2.PNG"
+include_graphics(img1_path)
+```
+
+## Bayesian Opt - round 3:
+```{r ,echo=FALSE ,fig.height=12,fig.width=10,fig.align="center"}
+img1_path<-"BO_2_3.PNG"
+include_graphics(img1_path)
+```
+
+## Bayesian Opt - round 4:
+```{r ,echo=FALSE ,fig.height=12,fig.width=10,fig.align="center"}
+img1_path<-"BO_2_4.PNG"
+include_graphics(img1_path)
+```
+
+## Bayesian Opt - round 5:
+```{r ,echo=FALSE ,fig.height=12,fig.width=10,fig.align="center"}
+img1_path<-"BO_2_5.PNG"
+include_graphics(img1_path)
+```
+
+## Bayesian Opt - round 6:
+```{r ,echo=FALSE ,fig.height=12,fig.width=10,fig.align="center"}
+img1_path<-"BO_2_6.PNG"
+include_graphics(img1_path)
+```
+
+## Bayesian Opt - round 7:
+```{r ,echo=FALSE ,fig.height=12,fig.width=10,fig.align="center"}
+img1_path<-"BO_2_7.PNG"
+include_graphics(img1_path)
+```
+
+
+# Summary
+
+## Summary
+**Pros**
+\
+- GPs are powerful and elegant ML method
+\
+- We get a measure of (un)certainty of prediction - for free ! 
+\
+- Works very good with regression with small training data sets
+
+**Cons**
+\
+- Matrix inversion $\ O(n^3)$
+\
+- More involved in Classification tasks
+
+## References:
+<div class="black">
+1) C.E Rasmussen & C.K.I Williams : Gaussian Processes for Machine Learning, MIT Press 2006
+   http://www.gaussianprocess.org/gpml/chapters/RW.pdf \
+2) ParBayesianOptimization R package:
+   https://github.com/AnotherSamWilson/ParBayesianOptimization \
+3) scikit-learn - Gaussian Processes: \
+   https://scikit-learn.org/stable/modules/gaussian_process.html
